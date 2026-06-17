@@ -6,6 +6,7 @@ CS2 Price Watcher — 系统托盘应用
 
 import sys
 import os
+import re
 
 if sys.platform == "win32":
     try:
@@ -23,6 +24,7 @@ import winsound
 import tkinter as tk
 from tkinter import ttk, messagebox, simpledialog
 from pathlib import Path
+from typing import Optional
 
 import pystray
 from PIL import Image, ImageDraw
@@ -79,7 +81,8 @@ class PriceWatcher:
         self.client = BuffClient(rate_limit=1.5)
         self._running = False
         self._stop = threading.Event()
-        self._prices = {}  # {goods_id: [最近价格列表]}
+        self._prices = {}   # {goods_id: [最近价格列表]}
+        self._last_alert = {}  # {goods_id: 上次提醒时间}
         self._thread = None
 
     def start(self):
@@ -116,7 +119,7 @@ class PriceWatcher:
         target = item.get("target_price", 0)
 
         # 获取在售列表
-        data = self.client.get_sell_orders(gid, sort="price.asc")
+        data = self.client.get_sell_orders(gid)
         listings = parse_sell_items(data)
 
         if not listings:
@@ -130,22 +133,30 @@ class PriceWatcher:
         if gid not in self._prices:
             self._prices[gid] = []
         self._prices[gid].append(lowest)
-        # 只保留最近 100 个数据点
         self._prices[gid] = self._prices[gid][-100:]
 
         self.log.info(f"[{name}] 最低: ¥{lowest:.2f} 均价: ¥{avg:.2f} 在售: {len(listings)}")
 
+        # 冷却检查：同一个饰品 5 分钟内不重复提醒
+        now = time.time()
+        if now - self._last_alert.get(gid, 0) < 300:
+            return
+
+        alerted = False
+
         # 检查 1: 目标价
         if target > 0 and lowest <= target:
             self.on_alert(name, f"🎯 到达目标价！¥{lowest:.2f} ≤ ¥{target:.2f}", lowest)
+            alerted = True
 
         # 检查 2: 低于均价
         if self.cfg.get("alert_below_avg") and avg > 0:
             pct = (avg - lowest) / avg * 100
             if pct >= self.cfg.get("price_drop_pct", 10):
                 self.on_alert(name, f"📉 低于均价 {pct:.0f}%！¥{lowest:.2f} (均价 ¥{avg:.2f})", lowest)
+                alerted = True
 
-        # 检查 3: 历史价格跌幅
+        # 检查 3: 近期价格跌幅
         history = self._prices.get(gid, [])
         if len(history) >= 5:
             recent_avg = sum(history[-5:]) / 5
@@ -153,6 +164,10 @@ class PriceWatcher:
                 drop = (recent_avg - lowest) / recent_avg * 100
                 if drop >= self.cfg.get("price_drop_pct", 10):
                     self.on_alert(name, f"⚠️ 近期跌 {drop:.0f}%！¥{lowest:.2f} (5次均 ¥{recent_avg:.2f})", lowest)
+                    alerted = True
+
+        if alerted:
+            self._last_alert[gid] = now
 
 
 # ──────────────────────────────────────────────
@@ -237,7 +252,8 @@ class SettingsDialog:
         for row in self.tree.get_children():
             self.tree.delete(row)
         for item in self.cfg["watchlist"]:
-            target = f"¥{item['target_price']:.2f}" if item.get("target_price") else "—"
+            tp = item.get("target_price", 0)
+            target = f"¥{tp:.2f}" if tp and tp > 0 else "—"
             self.tree.insert("", "end", values=(item["name"], target, ""))
 
     def _add_item(self):
@@ -270,46 +286,15 @@ class SettingsDialog:
         except Exception as e:
             messagebox.showerror("错误", str(e))
 
-    def _parse_goods_id(self, text: str) -> int | None:
+    def _parse_goods_id(self, text: str) -> Optional[int]:
         """从 Buff URL 或纯数字解析 goods_id"""
         text = text.strip()
-        # 纯数字
         if text.isdigit():
             return int(text)
-        # URL: https://buff.163.com/goods/773635
-        import re
         m = re.search(r'/goods/(\d+)', text)
         if m:
             return int(m.group(1))
         return None
-
-    def _pick_from_list(self, title, choices):
-        """弹窗让用户从列表中选择"""
-        dlg = tk.Toplevel(self.win)
-        dlg.title(title)
-        dlg.geometry("450x300")
-        dlg.configure(bg="#1a1a2e")
-        dlg.transient(self.win)
-        dlg.grab_set()
-
-        result = [None]
-
-        lb = tk.Listbox(dlg, bg="#16213e", fg="#e0e0e0", selectbackground="#2a5298", font=("Segoe UI", 10))
-        lb.pack(fill="both", expand=True, padx=10, pady=10)
-        for c in choices:
-            lb.insert(tk.END, c)
-
-        def confirm():
-            sel = lb.curselection()
-            if sel:
-                result[0] = sel[0]
-            dlg.destroy()
-
-        ttk.Button(dlg, text="确定", command=confirm).pack(pady=(0, 10))
-        lb.bind("<Double-Button-1>", lambda e: confirm())
-
-        dlg.wait_window()
-        return result[0]
 
     def _remove_item(self):
         sel = self.tree.selection()
