@@ -14,6 +14,7 @@ DEFAULTS = {
     "alert_below_avg": True,   # 低于均价时提醒
     "avg_days": 7,             # 均价计算天数
     "sound_alert": True,       # 声音提醒
+    "buff_cookie": "",         # Buff 登录 Cookie（启用搜索）
 }
 
 
