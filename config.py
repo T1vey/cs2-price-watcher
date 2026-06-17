@@ -8,13 +8,14 @@ CONFIG_DIR = Path.home() / "AppData" / "Local" / APP_NAME
 CONFIG_FILE = CONFIG_DIR / "config.json"
 
 DEFAULTS = {
-    "watchlist": [],           # [{"goods_id": 123, "name": "AK-47 | 二西莫夫", "target_price": 100.0}, ...]
-    "poll_interval": 30,       # 价格检查间隔（秒）
-    "price_drop_pct": 10,      # 价格跌幅百分比阈值
-    "alert_below_avg": True,   # 低于均价时提醒
-    "avg_days": 7,             # 均价计算天数
-    "sound_alert": True,       # 声音提醒
-    "buff_cookie": "",         # Buff 登录 Cookie（启用搜索）
+    "watchlist": [],           # [{"goods_id": 123, "name": "...", "target_price": 100.0, "source": "buff"}, ...]
+    "poll_interval": 30,
+    "price_drop_pct": 10,
+    "alert_below_avg": True,
+    "avg_days": 7,
+    "sound_alert": True,
+    "buff_cookie": "",
+    "youpin_cookie": "",       # 悠悠有品 Cookie（被 WAF 保护，必须提供）
 }
 
 
