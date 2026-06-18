@@ -92,9 +92,10 @@ class PriceWatcher:
     def _check_youpin(self, item):
         try:
             data = self.youpin.get_commodity_detail(item["goods_id"])
-            lowest = float(data.get("MinPrice", 0))
-            avg = float(data.get("AvgPrice", lowest))
-            count = int(data.get("OnSaleCount", 0))
+            # 悠悠有品详情返回结构
+            lowest = float(data.get("price", 0) or data.get("MinPrice", 0))
+            avg = float(data.get("steamPrice", lowest) or data.get("AvgPrice", lowest))
+            count = int(data.get("onSaleCount", 0) or data.get("OnSaleCount", 0))
             if lowest > 0: self._process(item, lowest, avg, count)
         except Exception as e:
             self.log.error(f"[{item['name']}] 悠悠有品查询失败: {e}")
@@ -163,16 +164,14 @@ class SettingsDialog:
         ttk.Button(bf, text="🔄 刷新价格", command=self._refresh_prices).pack(side="left", padx=2)
 
         # Cookie
-        fc = ttk.LabelFrame(self.win, text="Cookie（从浏览器 F12 复制）", padding=8)
+        fc = ttk.LabelFrame(self.win, text="Buff Cookie（可选，启用搜索）", padding=8)
         fc.pack(fill="x", **pad)
         r1 = ttk.Frame(fc); r1.pack(fill="x", pady=2)
-        ttk.Label(r1, text="Buff：", width=8).pack(side="left")
+        ttk.Label(r1, text="Cookie：", width=8).pack(side="left")
         self.var_cookie = tk.StringVar(value=self.cfg.get("buff_cookie",""))
-        ttk.Entry(r1, textvariable=self.var_cookie, width=55, show="*").pack(side="left", fill="x", expand=True)
-        r2 = ttk.Frame(fc); r2.pack(fill="x", pady=2)
-        ttk.Label(r2, text="悠悠有品：", width=8).pack(side="left")
-        self.var_yp_cookie = tk.StringVar(value=self.cfg.get("youpin_cookie",""))
-        ttk.Entry(r2, textvariable=self.var_yp_cookie, width=55, show="*").pack(side="left", fill="x", expand=True)
+        ttk.Entry(r1, textvariable=self.var_cookie, width=60, show="*").pack(side="left", fill="x", expand=True)
+        ttk.Label(fc, text="悠悠有品无需 Cookie（自动通过浏览器获取）",
+                  font=("Segoe UI", 8), foreground="#888").pack(anchor="w")
 
         # 参数
         fp = ttk.LabelFrame(self.win, text="参数", padding=8)
@@ -233,11 +232,10 @@ class SettingsDialog:
         if not gid: messagebox.showerror("错误","无法解析"); return
         try:
             if src == "youpin":
-                yp = self.var_yp_cookie.get().strip()
-                if not yp: messagebox.showwarning("提示","悠悠有品需要 Cookie"); return
-                c = YoupinClient(); c.set_cookies(yp)
+                c = YoupinClient()
                 d = c.get_commodity_detail(gid)
-                self._confirm(gid, d.get("CommodityName",f"#{gid}"), float(d.get("MinPrice",0)), "youpin")
+                self._confirm(gid, d.get("commodityName",f"#{gid}"), float(d.get("price",0)), "youpin")
+                c.close()
             else:
                 c = BuffClient()
                 d = c.get_goods_info(gid)
@@ -306,7 +304,6 @@ class SettingsDialog:
         self.cfg["price_drop_pct"] = max(1, self.var_drop.get())
         self.cfg["sound_alert"] = self.var_sound.get()
         self.cfg["buff_cookie"] = self.var_cookie.get().strip()
-        self.cfg["youpin_cookie"] = self.var_yp_cookie.get().strip()
         config.save(self.cfg)
         if self.on_save: self.on_save(self.cfg)
         messagebox.showinfo("已保存","配置已保存，监控已重启")

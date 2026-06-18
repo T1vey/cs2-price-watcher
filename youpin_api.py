@@ -1,122 +1,129 @@
-"""悠悠有品 API 客户端 — 获取 CS2 饰品在售价格"""
+"""悠悠有品 API 客户端 — 通过 Playwright 绕过 WAF"""
 
 import time
 import logging
-import requests
-
-YOUPIN_API = "https://api.youpin898.com"
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
-    "Referer": "https://www.youpin898.com/",
-    "Origin": "https://www.youpin898.com",
-    "Content-Type": "application/json",
-    "Accept": "application/json, text/plain, */*",
-}
 
 log = logging.getLogger("youpin_api")
 
 
 class YoupinClient:
-    """悠悠有品 API 客户端"""
+    """悠悠有品客户端（Playwright 浏览器自动化）"""
 
-    def __init__(self, rate_limit: float = 2.0, max_retries: int = 3):
-        self.session = requests.Session()
-        self.session.headers.update(HEADERS)
-        self._last_request = 0
+    def __init__(self, rate_limit: float = 3.0):
         self._rate_limit = rate_limit
-        self._max_retries = max_retries
+        self._last_request = 0
+        self._browser = None
+        self._page = None
+        self._pw = None
+        self._ready = False
 
-    def set_cookies(self, cookies: str):
-        """设置登录 Cookie（必须，否则被 WAF 拦截）
-        从浏览器开发者工具复制 Cookie
-        """
-        for item in cookies.split(";"):
-            item = item.strip()
-            if "=" in item:
-                k, v = item.split("=", 1)
-                self.session.cookies.set(k.strip(), v.strip())
+    def _ensure_browser(self):
+        if self._ready:
+            return
+        try:
+            from playwright.sync_api import sync_playwright
+            self._pw = sync_playwright().start()
+            self._browser = self._pw.chromium.launch(headless=True)
+            self._page = self._browser.new_page()
+            self._page.goto("https://www.youpin898.com/market",
+                          wait_until="domcontentloaded", timeout=30000)
+            self._page.wait_for_timeout(5000)  # 等 SPA 渲染
+            self._ready = True
+            log.info("悠悠有品浏览器已启动")
+        except Exception as e:
+            log.error(f"启动浏览器失败: {e}")
+            raise
 
-    def _post(self, path: str, data: dict = None) -> dict:
-        """带限速 + 重试的 POST 请求"""
-        url = f"{YOUPIN_API}{path}"
+    def _wait_rate_limit(self):
+        elapsed = time.time() - self._last_request
+        if elapsed < self._rate_limit:
+            time.sleep(self._rate_limit - elapsed)
+        self._last_request = time.time()
 
-        for attempt in range(self._max_retries):
-            elapsed = time.time() - self._last_request
-            if elapsed < self._rate_limit:
-                time.sleep(self._rate_limit - elapsed)
+    def _intercept_api(self, url_keyword: str, action, timeout: int = 8000) -> dict:
+        """执行操作并拦截 API 响应"""
+        self._ensure_browser()
+        self._wait_rate_limit()
+        result = {}
 
+        def on_response(response):
+            if url_keyword in response.url:
+                try:
+                    result["data"] = response.json()
+                except:
+                    pass
+
+        self._page.on("response", on_response)
+        try:
+            action()
+            self._page.wait_for_timeout(timeout)
+        finally:
+            self._page.remove_listener("response", on_response)
+
+        return result.get("data", {})
+
+    def get_market_list(self) -> list[dict]:
+        """获取市场列表"""
+        self._ensure_browser()
+
+        def do_reload():
+            self._page.reload(wait_until="domcontentloaded", timeout=20000)
+            self._page.wait_for_timeout(5000)
+
+        resp = self._intercept_api("querySaleTemplate", do_reload)
+        items = resp.get("Data", [])
+        return [_parse_item(it) for it in items]
+
+    def search(self, keyword: str) -> list[dict]:
+        """搜索饰品"""
+        self._ensure_browser()
+
+        def do_search():
             try:
-                resp = self.session.post(url, json=data or {}, timeout=15)
-                self._last_request = time.time()
+                inp = self._page.locator('input[placeholder*="物品"], input[placeholder*="名称"]').first
+                inp.fill(keyword)
+                self._page.keyboard.press("Enter")
+            except Exception as e:
+                log.warning(f"搜索操作失败: {e}")
 
-                if resp.status_code == 405:
-                    raise ValueError("被 WAF 拦截，请更新 Cookie")
-                if resp.status_code == 429:
-                    wait = min(5 * (attempt + 1), 30)
-                    log.warning(f"Rate limited, waiting {wait}s...")
-                    time.sleep(wait)
-                    continue
-
-                resp.raise_for_status()
-                result = resp.json()
-
-                code = result.get("Code")
-                if code == 0 or code == 200:
-                    return result.get("Data", {})
-                else:
-                    raise ValueError(f"YouPin API: {code} - {result.get('Message')}")
-
-            except requests.exceptions.Timeout:
-                log.warning(f"Timeout, retry {attempt+1}/{self._max_retries}")
-                time.sleep(2)
-            except requests.exceptions.ConnectionError:
-                log.warning(f"Connection error, retry {attempt+1}/{self._max_retries}")
-                time.sleep(5)
-
-        raise RuntimeError(f"请求失败，已重试 {self._max_retries} 次: {path}")
-
-    def search_market(self, keyword: str = "", page: int = 1, page_size: int = 20) -> dict:
-        """
-        搜索市场在售饰品
-        返回: {"CommodityList": [...], "Total": N}
-        """
-        data = {
-            "pageIndex": page,
-            "pageSize": page_size,
-        }
-        if keyword:
-            data["keyword"] = keyword
-        return self._post("/api/homepage/pc/goods/market/queryOnSaleCommodityList", data)
+        resp = self._intercept_api("querySaleTemplate", do_search, timeout=10000)
+        items = resp.get("Data", [])
+        return [_parse_item(it) for it in items]
 
     def get_commodity_detail(self, template_id: int) -> dict:
-        """
-        获取商品详情
-        """
-        return self._post("/api/homepage/pc/goods/market/queryTemplateDetail", {
-            "templateId": template_id,
-        })
+        """获取商品详情"""
+        self._ensure_browser()
 
-    def get_price_trend(self, template_id: int) -> dict:
-        """
-        获取价格趋势
-        """
-        return self._post("/api/youpin/price/trend/filter/info", {
-            "templateId": template_id,
-        })
+        def do_nav():
+            self._page.goto(f"https://www.youpin898.com/goods/{template_id}",
+                          wait_until="domcontentloaded", timeout=20000)
+            self._page.wait_for_timeout(5000)
+
+        resp = self._intercept_api("queryTemplateDetail", do_nav)
+        return resp.get("Data", {})
+
+    def close(self):
+        if self._browser:
+            self._browser.close()
+        if self._pw:
+            self._pw.stop()
+        self._ready = False
 
 
-def parse_commodity_list(data: dict) -> list[dict]:
-    """
-    解析商品列表，提取关键信息
-    """
-    results = []
-    for item in data.get("CommodityList", []):
-        results.append({
-            "template_id": item.get("TemplateId"),
-            "name": item.get("CommodityName", ""),
-            "price": float(item.get("Price", 0)),
-            "on_sale_count": item.get("OnSaleCount", 0),
-            "icon": item.get("ImageUrl", ""),
-            "game": item.get("GameName", "csgo"),
-        })
-    return results
+def _parse_item(item: dict) -> dict:
+    return {
+        "id": item.get("id"),
+        "name": item.get("commodityName", ""),
+        "hash_name": item.get("commodityHashName", ""),
+        "price": float(item.get("price", 0)),
+        "steam_price": float(item.get("steamPrice", 0)),
+        "on_sale_count": item.get("onSaleCount", 0),
+        "icon": item.get("iconUrl", ""),
+        "type": item.get("typeName", ""),
+        "exterior": item.get("exterior", ""),
+        "rarity": item.get("rarity", ""),
+    }
+
+
+def parse_commodity_list(data: list) -> list[dict]:
+    return [_parse_item(it) for it in data]
