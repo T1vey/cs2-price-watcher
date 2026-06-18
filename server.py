@@ -619,21 +619,12 @@ def search_items(q: str):
         buff_data = get_buff().search(keyword)
         results.extend(_normalize_buff_search(buff_data))
     except Exception as e:
-        log.info("Buff 搜索 API 不可用（需 Cookie），尝试多页列表过滤: %s", e)
-        # Fallback: 多页列表 + 本地关键词过滤
+        log.info("Buff 搜索 API 不可用（需 Cookie），用列表过滤: %s", e)
         try:
-            all_items = []
-            for page in range(1, 6):  # 最多 5 页 × 20 = 100 条
-                try:
-                    list_data = get_buff().list_items(page=page)
-                    page_items = list_data.get("items", [])
-                    if not page_items:
-                        break
-                    all_items.extend(page_items)
-                except:
-                    break
+            list_data = get_buff().list_items()
+            items = list_data.get("items", [])
             kw = keyword.lower()
-            matched = [it for it in all_items
+            matched = [it for it in items
                        if kw in (it.get("name", "") or "").lower()
                        or kw in (it.get("market_hash_name", "") or "").lower()]
             results.extend(_normalize_buff_search({"items": matched}))
