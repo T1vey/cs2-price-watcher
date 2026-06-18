@@ -75,19 +75,48 @@ class YoupinClient:
         return [_parse_item(it) for it in items]
 
     def search(self, keyword: str) -> list[dict]:
-        """搜索饰品"""
+        """搜索饰品 — 通过输入框搜索，拦截 lenovoSearch API"""
         self._ensure_browser()
+        self._wait_rate_limit()
+        result = {}
 
-        def do_search():
-            try:
-                inp = self._page.locator('input[placeholder*="物品"], input[placeholder*="名称"]').first
-                inp.fill(keyword)
-                self._page.keyboard.press("Enter")
-            except Exception as e:
-                log.warning(f"搜索操作失败: {e}")
+        def on_response(response):
+            url = response.url
+            # 拦截搜索结果 API
+            if any(kw in url for kw in ["lenovoSearch", "querySaleTemplate"]):
+                if "track" not in url and "report" not in url:
+                    try:
+                        data = response.json()
+                        if isinstance(data, dict) and data.get("Code") == 0:
+                            items = data.get("Data", [])
+                            if isinstance(items, list) and len(items) > 0:
+                                result["data"] = data
+                                result["source"] = url.split("/")[-1].split("?")[0]
+                    except:
+                        pass
 
-        resp = self._intercept_api("querySaleTemplate", do_search, timeout=10000)
-        items = resp.get("Data", [])
+        self._page.on("response", on_response)
+        try:
+            # 导航到市场页
+            self._page.goto("https://www.youpin898.com/market",
+                          wait_until="domcontentloaded", timeout=20000)
+            self._page.wait_for_timeout(2000)
+            # 找搜索框输入关键词
+            inp = self._page.locator('input[placeholder*="物品"], input[placeholder*="名称"]').first
+            inp.click()
+            inp.fill(keyword)
+            self._page.wait_for_timeout(500)
+            self._page.keyboard.press("Enter")
+            self._page.wait_for_timeout(6000)
+        except Exception as e:
+            log.warning(f"搜索失败: {e}")
+        finally:
+            self._page.remove_listener("response", on_response)
+
+        data = result.get("data", {})
+        items = data.get("Data", [])
+        source = result.get("source", "")
+        log.info(f"悠悠有品搜索 '{keyword}': {len(items)} items (from {source})")
         return [_parse_item(it) for it in items]
 
     def get_commodity_detail(self, template_id: int) -> dict:

@@ -619,25 +619,34 @@ def search_items(q: str):
         buff_data = get_buff().search(keyword)
         results.extend(_normalize_buff_search(buff_data))
     except Exception as e:
-        log.info("Buff 搜索 API 不可用（需 Cookie），尝试列表过滤: %s", e)
-        # Fallback: use list API + local filter
+        log.info("Buff 搜索 API 不可用（需 Cookie），尝试多页列表过滤: %s", e)
+        # Fallback: 多页列表 + 本地关键词过滤
         try:
-            list_data = get_buff().list_items()
-            items = list_data.get("items", [])
+            all_items = []
+            for page in range(1, 6):  # 最多 5 页 × 20 = 100 条
+                try:
+                    list_data = get_buff().list_items(page=page)
+                    page_items = list_data.get("items", [])
+                    if not page_items:
+                        break
+                    all_items.extend(page_items)
+                except:
+                    break
             kw = keyword.lower()
-            matched = [it for it in items if kw in (it.get("name", "") or "").lower()
+            matched = [it for it in all_items
+                       if kw in (it.get("name", "") or "").lower()
                        or kw in (it.get("market_hash_name", "") or "").lower()]
             results.extend(_normalize_buff_search({"items": matched}))
         except Exception as e2:
             errors.append(f"Buff: {str(e2)[:120]}")
 
-    # 2. YouPin search (via Playwright)
+    # 2. YouPin search (via Playwright) — 需要登录才能搜索
     try:
         yp_data = get_youpin().search(keyword)
-        results.extend(_normalize_youpin_search(yp_data))
+        if yp_data:
+            results.extend(_normalize_youpin_search(yp_data))
     except Exception as e:
-        log.warning("YouPin 搜索失败: %s", e)
-        errors.append(f"UU: {str(e)[:120]}")
+        log.debug("YouPin 搜索不可用: %s", e)
 
     # Dedupe + add category
     deduped: list[dict] = []
