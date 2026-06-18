@@ -393,6 +393,7 @@ def _item_view(it: dict) -> dict:
         "id": gid,
         "goods_id": gid,
         "name": it.get("name") or f"#{gid}",
+        "category": _detect_category(it.get("name", "")),
         "source": it.get("source", "buff"),
         "target_price": target,
         "buff": buff,
@@ -434,6 +435,40 @@ def _first_price(*payloads: dict) -> Optional[float]:
             if price is not None:
                 return round(price, 2)
     return None
+
+
+# CS2 weapon categories
+_CATEGORIES = {
+    "匕首": ["匕首", "刺刀", "蝴蝶刀", "爪刀", "折叠刀", "穿肠刀", "猎杀者", "鲍伊",
+             "弯刀", "暗影双匕", "骷髅刀", "廓尔喀刀", "短剑", "经典刀", "karambit",
+             "bayonet", "butterfly", "flip", "gut", "huntsman", "bowie", "falchion",
+             "shadow daggers", "skeleton", "navaja", "stiletto", "talon", "ursus",
+             "classic"],
+    "手枪": ["手枪", "沙鹰", "usp", "glock", "p250", "tec-9", "five-seven", "cz75",
+             "deagle", "r8", "双持贝瑞塔", "p2000", "desert eagle", "dual berettas"],
+    "步枪": ["步枪", "ak-47", "m4a4", "m4a1", "aug", "sg 553", "famas", "galil",
+             "scar-20", "g3sg1", "awp", "ssg 08"],
+    "冲锋枪": ["冲锋枪", "mp9", "mp7", "mp5", "ump-45", "p90", "mac-10", "pp-bizon",
+               "mp5-sd"],
+    "霰弹枪": ["霰弹枪", "nova", "xm1014", "mag-7", "sawed-off"],
+    "机枪": ["机枪", "negev", "m249"],
+    "手套": ["手套", "运动手套", "摩托手套", "专业手套", "血猎手套", "手部束带",
+             "driver gloves", "sport gloves", "specialist gloves", "bloodhound gloves",
+             "hydra gloves", "broken fang gloves"],
+    "印花": ["印花", "sticker"],
+    "武器箱": ["武器箱", "case", "钥匙"],
+    "探员": ["探员", "agent"],
+}
+
+
+def _detect_category(name: str) -> str:
+    """Detect CS2 weapon category from item name."""
+    low = name.lower()
+    for cat, keywords in _CATEGORIES.items():
+        for kw in keywords:
+            if kw in low:
+                return cat
+    return "其他"
 
 
 def _normalize_buff_search(data: Any, limit: int = 20) -> list[dict]:
@@ -574,23 +609,37 @@ def search_items(q: str):
     """Search Buff and YouPin for items matching a user query."""
     keyword = (q or "").strip()
     if len(keyword) < 2:
-        return []
+        return {"results": [], "errors": []}
 
     results: list[dict] = []
     errors: list[str] = []
 
+    # 1. Buff search (requires cookie for search API)
     try:
-        results.extend(_normalize_buff_search(get_buff().search(keyword)))
+        buff_data = get_buff().search(keyword)
+        results.extend(_normalize_buff_search(buff_data))
     except Exception as e:
-        log.warning("Buff 搜索失败: %s", e)
-        errors.append(f"Buff: {str(e)[:120]}")
+        log.info("Buff 搜索 API 不可用（需 Cookie），尝试列表过滤: %s", e)
+        # Fallback: use list API + local filter
+        try:
+            list_data = get_buff().list_items()
+            items = list_data.get("items", [])
+            kw = keyword.lower()
+            matched = [it for it in items if kw in (it.get("name", "") or "").lower()
+                       or kw in (it.get("market_hash_name", "") or "").lower()]
+            results.extend(_normalize_buff_search({"items": matched}))
+        except Exception as e2:
+            errors.append(f"Buff: {str(e2)[:120]}")
 
+    # 2. YouPin search (via Playwright)
     try:
-        results.extend(_normalize_youpin_search(get_youpin().search(keyword)))
+        yp_data = get_youpin().search(keyword)
+        results.extend(_normalize_youpin_search(yp_data))
     except Exception as e:
         log.warning("YouPin 搜索失败: %s", e)
-        errors.append(f"YouPin: {str(e)[:120]}")
+        errors.append(f"UU: {str(e)[:120]}")
 
+    # Dedupe + add category
     deduped: list[dict] = []
     seen: set[tuple[str, int]] = set()
     for item in results:
@@ -598,11 +647,10 @@ def search_items(q: str):
         if key in seen or not key[1]:
             continue
         seen.add(key)
+        item["category"] = _detect_category(item.get("name", ""))
         deduped.append(item)
 
-    if not deduped and errors:
-        raise HTTPException(status_code=502, detail="; ".join(errors)[:240])
-    return deduped[:30]
+    return {"results": deduped[:30], "errors": errors}
 
 
 @app.get("/api/recommend/{gid}")

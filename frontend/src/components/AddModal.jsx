@@ -89,6 +89,7 @@ export default function AddModal({ apiBase, onClose, onAdded }) {
                     <div className="search-item-info">
                       <div className="search-item-name">{r.name}</div>
                       <div className="search-item-meta">
+                        {r.category && <span className="cat-tag">{r.category}</span>}
                         {r.source === 'youpin' ? '悠悠有品' : 'Buff'}
                         {r.on_sale_count ? ` · ${r.on_sale_count} 在售` : ''}
                       </div>
